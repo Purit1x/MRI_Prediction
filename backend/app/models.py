@@ -57,14 +57,23 @@ class MRISequence(db.Model):
     __tablename__ = 'mri_sequences'
     
     seq_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    seq_dir = db.Column(db.String(255), nullable=False)
+    seq_name = db.Column(db.String(255), nullable=False)  # 序列名称
+    seq_dir = db.Column(db.String(255), nullable=False)   # 序列文件夹路径
+    patient_id = db.Column(db.Integer, db.ForeignKey('patients.patient_id'), nullable=False)  # 关联患者
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)  # 创建时间
+    
+    # 关联关系
+    patient = db.relationship('Patient', backref=db.backref('sequences', lazy=True))
+    items = db.relationship('MRISeqItem', backref='sequence', lazy=True)
 
 class MRISeqItem(db.Model):
     __tablename__ = 'mri_seq_items'
     
     item_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    item_name = db.Column(db.String(255), nullable=False)
+    item_name = db.Column(db.String(255), nullable=False)  # 图像文件名
+    file_path = db.Column(db.String(255), nullable=False)  # 图像文件路径
     seq_id = db.Column(db.Integer, db.ForeignKey('mri_sequences.seq_id'), nullable=False)
+    uploaded_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)  # 上传时间
 
 class Patient(db.Model):
     __tablename__ = 'patients'
@@ -74,6 +83,7 @@ class Patient(db.Model):
     sex = db.Column(db.String(10), nullable=False)
     age = db.Column(db.Integer, nullable=False)
     id_number = db.Column(db.String(18), unique=True, nullable=False)
+    photo_path = db.Column(db.String(255))  # 患者照片路径
 
 class PredRecord(db.Model):
     __tablename__ = 'pred_records'

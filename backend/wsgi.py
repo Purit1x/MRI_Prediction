@@ -23,4 +23,4 @@ for rule in app.url_map.iter_rules():
     logger.debug(f"{rule.endpoint}: {rule.methods} {rule.rule}")
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5001, debug=True) 
+    app.run(host='0.0.0.0', port=5000, debug=True) 

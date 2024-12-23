@@ -31,6 +31,9 @@ def generate_verification_code():
 # 存储验证码信息
 verification_codes = {}
 
+# 存储密码修改验证码信息
+password_change_codes = {}
+
 @bp.route('/doctor/register', methods=['POST'])
 def doctor_register():
     """医生注册第一步：提交基本信息"""
@@ -350,30 +353,95 @@ def refresh():
         'access_token': access_token
     })
 
-@bp.route('/doctor/change-password', methods=['POST'])
+@bp.route('/doctor/change-password/send-code', methods=['POST'])
 @jwt_required()
-def change_password():
-    """修改密码接口"""
+def send_password_change_code():
+    """发送密码修改验证码"""
     current_user_id = get_jwt_identity()
-    data = request.get_json()
-    
-    if not all(k in data for k in ['current_password', 'new_password']):
-        return jsonify({
-            'success': False,
-            'message': 'Missing required fields'
-        }), 400
-    
     doctor = Doctor.query.get(current_user_id)
+    
     if not doctor:
         return jsonify({
             'success': False,
-            'message': 'Doctor not found'
+            'message': '用户不存在'
         }), 404
     
+    # 检查是否在1分钟内重复发送
+    verification_info = password_change_codes.get(current_user_id)
+    if verification_info and not current_app.config.get('TESTING'):
+        time_diff = datetime.utcnow() - verification_info['created_at']
+        if time_diff < timedelta(minutes=1):
+            return jsonify({
+                'success': False,
+                'message': '请等待1分钟后再重新发送验证码'
+            }), 400
+    
+    # 生成新的验证码
+    verification_code = generate_verification_code()
+    password_change_codes[current_user_id] = {
+        'code': verification_code,
+        'created_at': datetime.utcnow()
+    }
+    
+    try:
+        # 在测试环境中跳过实际的邮件发送
+        if current_app.config.get('TESTING'):
+            return jsonify({
+                'success': True,
+                'message': '验证码发送成功'
+            })
+        
+        # 发送验证码邮件
+        if not send_verification_code(doctor.email, verification_code):
+            return jsonify({
+                'success': False,
+                'message': '验证码发送失败'
+            }), 500
+        
+        return jsonify({
+            'success': True,
+            'message': '验证码发送成功'
+        })
+    except Exception as e:
+        current_app.logger.error(f"Error in send_password_change_code: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': '验证码发送失败'
+        }), 500
+
+@bp.route('/doctor/change-password', methods=['POST'])
+@jwt_required()
+def change_password():
+    """修改密码"""
+    current_user_id = get_jwt_identity()
+    doctor = Doctor.query.get(current_user_id)
+    
+    if not doctor:
+        return jsonify({
+            'success': False,
+            'message': '用户不存在'
+        }), 404
+    
+    data = request.get_json()
+    required_fields = ['current_password', 'new_password', 'confirm_password', 'verification_code']
+    if not all(k in data for k in required_fields):
+        return jsonify({
+            'success': False,
+            'message': '缺少必要字段'
+        }), 400
+    
+    # 验证当前密码
     if not doctor.check_password(data['current_password']):
         return jsonify({
             'success': False,
-            'message': 'Current password is incorrect'
+            'message': '当前密码错误'
+        }), 400
+    
+    # 验证新密码一致性
+    if data['new_password'] != data['confirm_password']:
+        return jsonify({
+            'success': False,
+            'message': '两次输入的新密码不一致'
         }), 400
     
     # 验证新密码强度
@@ -384,16 +452,43 @@ def change_password():
             'message': error_msg
         }), 400
     
+    # 验证验证码
+    verification_info = password_change_codes.get(current_user_id)
+    if not verification_info:
+        return jsonify({
+            'success': False,
+            'message': '请先获取验证码'
+        }), 400
+    
+    # 验证码过期检查（10分钟）
+    if datetime.utcnow() - verification_info['created_at'] > timedelta(minutes=10):
+        password_change_codes.pop(current_user_id)
+        return jsonify({
+            'success': False,
+            'message': '验证码已过期，请重新获取'
+        }), 400
+    
+    if verification_info['code'] != data['verification_code']:
+        return jsonify({
+            'success': False,
+            'message': '验证码错误'
+        }), 400
+    
     try:
+        # 更新密码
         doctor.set_password(data['new_password'])
         db.session.commit()
+        
+        # 清理验证码
+        password_change_codes.pop(current_user_id)
+        
         return jsonify({
             'success': True,
-            'message': 'Password changed successfully'
+            'message': '密码修改成功'
         })
     except Exception as e:
         db.session.rollback()
         return jsonify({
             'success': False,
-            'message': str(e)
+            'message': '密码修改失败'
         }), 500

@@ -1,51 +1,399 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import create_access_token, create_refresh_token, jwt_required, get_jwt_identity
 from app.models import Doctor, Administrator
 from app import db
+from app.utils.email import send_verification_code
 from datetime import datetime, timedelta
+import re
+import secrets
+import random
 
 bp = Blueprint('auth', __name__)
 
-@bp.route('/doctor/login', methods=['POST'])
-def doctor_login():
+def validate_password(password):
+    """验证密码强度"""
+    if len(password) < 8:
+        return False, "Password must be at least 8 characters long"
+    if not re.search(r"[A-Z]", password):
+        return False, "Password must contain at least one uppercase letter"
+    if not re.search(r"[a-z]", password):
+        return False, "Password must contain at least one lowercase letter"
+    if not re.search(r"\d", password):
+        return False, "Password must contain at least one number"
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", password):
+        return False, "Password must contain at least one special character"
+    return True, None
+
+def generate_verification_code():
+    """生成6位数字验证码"""
+    return ''.join(str(random.randint(0, 9)) for _ in range(6))
+
+# 存储验证码信息
+verification_codes = {}
+
+@bp.route('/doctor/register', methods=['POST'])
+def doctor_register():
+    """医生注册第一步：提交基本信息"""
     data = request.get_json()
     
-    if not all(k in data for k in ['job_number', 'password']):
-        return jsonify({'error': '缺少必要字段'}), 400
+    # 验证必要字段
+    required_fields = ['doctor_id', 'name', 'password', 'email', 'department']
+    if not all(k in data for k in required_fields):
+        return jsonify({
+            'success': False,
+            'message': '缺少必要字段'
+        }), 400
     
-    doctor = Doctor.query.filter_by(job_number=data['job_number']).first()
+    # 验证工号是否已存在
+    if Doctor.query.filter_by(doctor_id=data['doctor_id']).first():
+        return jsonify({
+            'success': False,
+            'message': 'Doctor ID already exists'
+        }), 400
     
-    if doctor and doctor.check_password(data['password']):
+    # 验证邮箱是否已存在
+    if Doctor.query.filter_by(email=data['email']).first():
+        return jsonify({
+            'success': False,
+            'message': 'Email already exists'
+        }), 400
+    
+    # 验证邮箱格式
+    if not re.match(r"[^@]+@[^@]+\.[^@]+", data['email']):
+        return jsonify({
+            'success': False,
+            'message': 'Invalid email format'
+        }), 400
+    
+    # 验证密码强度
+    is_valid, error_msg = validate_password(data['password'])
+    if not is_valid:
+        return jsonify({
+            'success': False,
+            'message': error_msg
+        }), 400
+    
+    # 生成验证码
+    verification_id = secrets.token_urlsafe(32)
+    verification_code = generate_verification_code()  # 使用随机生成的验证码
+    verification_codes[verification_id] = {
+        'code': verification_code,
+        'doctor_data': data,
+        'created_at': datetime.utcnow()
+    }
+    
+    try:
+        # 在测试环境中跳过实际的邮件发送
+        if current_app.config.get('TESTING'):
+            return jsonify({
+                'success': True,
+                'message': 'Verification code sent successfully',
+                'verification_id': verification_id
+            })
+        
+        # 发送验证码邮件
+        if not send_verification_code(data['email'], verification_code):
+            return jsonify({
+                'success': False,
+                'message': 'Failed to send verification code'
+            }), 500
+        
+        return jsonify({
+            'success': True,
+            'message': 'Verification code sent successfully',
+            'verification_id': verification_id
+        })
+    except Exception as e:
+        current_app.logger.error(f"Error in doctor_register: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@bp.route('/doctor/verify', methods=['POST'])
+def verify_doctor():
+    """医生注册第二步：验证邮箱"""
+    data = request.get_json()
+    
+    if not all(k in data for k in ['verification_id', 'code']):
+        return jsonify({
+            'success': False,
+            'message': 'Missing required fields'
+        }), 400
+    
+    verification_info = verification_codes.get(data['verification_id'])
+    if not verification_info:
+        return jsonify({
+            'success': False,
+            'message': 'Invalid verification ID'
+        }), 400
+    
+    # 验证码过期检查（30分钟）
+    if datetime.utcnow() - verification_info['created_at'] > timedelta(minutes=30):
+        verification_codes.pop(data['verification_id'])
+        return jsonify({
+            'success': False,
+            'message': 'Verification code expired'
+        }), 400
+    
+    if verification_info['code'] != data['code']:
+        return jsonify({
+            'success': False,
+            'message': 'Invalid verification code'
+        }), 400
+    
+    try:
+        # 创建新医生账户
+        doctor_data = verification_info['doctor_data']
+        doctor = Doctor(
+            doctor_id=doctor_data['doctor_id'],
+            name=doctor_data['name'],
+            email=doctor_data['email'],
+            department=doctor_data['department']
+        )
+        doctor.set_password(doctor_data['password'])
+        
+        db.session.add(doctor)
+        db.session.commit()
+        
+        # 清理验证码信息
+        verification_codes.pop(data['verification_id'])
+        
+        # 生成登录令牌
         access_token = create_access_token(identity=doctor.doctor_id)
         refresh_token = create_refresh_token(identity=doctor.doctor_id)
+        
         return jsonify({
+            'success': True,
+            'message': 'Registration completed successfully',
             'access_token': access_token,
-            'refresh_token': refresh_token,
-            'doctor': {
-                'id': doctor.doctor_id,
-                'name': doctor.doctor_name,
-                'job_number': doctor.job_number
-            }
+            'refresh_token': refresh_token
         })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@bp.route('/doctor/resend-code', methods=['POST'])
+def resend_verification_code():
+    """重新发送验证码"""
+    data = request.get_json()
     
-    return jsonify({'error': '工号或密码错误'}), 401
+    if 'verification_id' not in data:
+        return jsonify({
+            'success': False,
+            'message': 'Missing verification ID'
+        }), 400
+    
+    verification_info = verification_codes.get(data['verification_id'])
+    if not verification_info:
+        return jsonify({
+            'success': False,
+            'message': 'Invalid verification ID'
+        }), 400
+    
+    # 在测试环境中跳过等待时间查
+    if not current_app.config.get('TESTING'):
+        # 检查是否在60秒内重发
+        if datetime.utcnow() - verification_info['created_at'] < timedelta(seconds=60):
+            return jsonify({
+                'success': False,
+                'message': 'Please wait before requesting a new code'
+            }), 400
+    
+    try:
+        # 生成新验证码
+        new_code = generate_verification_code()  # 使用随机生成的验证码
+        verification_info['code'] = new_code
+        verification_info['created_at'] = datetime.utcnow()
+        
+        # 在测试环境中跳过实际的邮件发送
+        if current_app.config.get('TESTING'):
+            return jsonify({
+                'success': True,
+                'message': 'Verification code resent successfully'
+            })
+        
+        # 发送新验证码
+        if not send_verification_code(verification_info['doctor_data']['email'], new_code):
+            return jsonify({
+                'success': False,
+                'message': 'Failed to send verification code'
+            }), 500
+        
+        return jsonify({
+            'success': True,
+            'message': 'Verification code resent successfully'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@bp.route('/doctor/login', methods=['POST'])
+def doctor_login():
+    """医生登录接口"""
+    data = request.get_json()
+    
+    # 验证必要字段
+    if not all(k in data for k in ['login_id', 'password']):
+        return jsonify({
+            'success': False,
+            'message': '缺少必要字段'
+        }), 400
+    
+    # 通过邮箱或工号查找医生
+    doctor = Doctor.query.filter(
+        (Doctor.email == data['login_id']) | 
+        (Doctor.doctor_id == data['login_id'])
+    ).first()
+    
+    if not doctor:
+        return jsonify({
+            'success': False,
+            'message': '用户不存在'
+        }), 401
+    
+    # 检查账户是否被锁定
+    if doctor.is_locked():
+        return jsonify({
+            'success': False,
+            'message': f'账户已被锁定，请在 {doctor.locked_until} 后重试'
+        }), 401
+    
+    # 验证密码
+    if not doctor.check_password(data['password']):
+        doctor.increment_login_attempts()
+        db.session.commit()
+        
+        if doctor.is_locked():
+            return jsonify({
+                'success': False,
+                'message': '登录失败次数过多，账户已被锁定30分钟'
+            }), 401
+        
+        remaining_attempts = 5 - doctor.login_attempts
+        return jsonify({
+            'success': False,
+            'message': f'密码错误，还剩 {remaining_attempts} 次尝试机会'
+        }), 401
+    
+    # 登录成功，重置登录尝试次数
+    doctor.reset_login_attempts()
+    db.session.commit()
+    
+    # 生成访问令牌
+    access_token = create_access_token(identity=doctor.doctor_id)
+    refresh_token = create_refresh_token(identity=doctor.doctor_id)
+    
+    return jsonify({
+        'success': True,
+        'access_token': access_token,
+        'refresh_token': refresh_token,
+        'doctor': {
+            'id': doctor.doctor_id,
+            'name': doctor.name,
+            'department': doctor.department,
+            'email': doctor.email
+        }
+    })
 
 @bp.route('/admin/login', methods=['POST'])
 def admin_login():
+    """管理员登录接口"""
     data = request.get_json()
     
     if not all(k in data for k in ['admin_id', 'password']):
-        return jsonify({'error': '缺少必要字段'}), 400
+        return jsonify({
+            'success': False,
+            'message': '缺少必要字段'
+        }), 400
     
     admin = Administrator.query.get(data['admin_id'])
     
-    if admin and admin.check_password(data['password']):
-        access_token = create_access_token(identity=admin.admin_id)
-        refresh_token = create_refresh_token(identity=admin.admin_id)
+    if not admin:
         return jsonify({
-            'access_token': access_token,
-            'refresh_token': refresh_token,
-            'admin_id': admin.admin_id
-        })
+            'success': False,
+            'message': '管理员ID不存在'
+        }), 401
     
-    return jsonify({'error': '管理员ID或密码错误'}), 401
+    if not admin.check_password(data['password']):
+        return jsonify({
+            'success': False,
+            'message': '密码错误'
+        }), 401
+    
+    # 生成访问令牌
+    access_token = create_access_token(identity=f"admin_{admin.admin_id}")
+    refresh_token = create_refresh_token(identity=f"admin_{admin.admin_id}")
+    
+    return jsonify({
+        'success': True,
+        'access_token': access_token,
+        'refresh_token': refresh_token,
+        'admin': {
+            'id': admin.admin_id
+        }
+    })
+
+@bp.route('/refresh', methods=['POST'])
+@jwt_required(refresh=True)
+def refresh():
+    """刷新访问令牌"""
+    current_user = get_jwt_identity()
+    access_token = create_access_token(identity=current_user)
+    return jsonify({
+        'success': True,
+        'access_token': access_token
+    })
+
+@bp.route('/doctor/change-password', methods=['POST'])
+@jwt_required()
+def change_password():
+    """修改密码接口"""
+    current_user_id = get_jwt_identity()
+    data = request.get_json()
+    
+    if not all(k in data for k in ['current_password', 'new_password']):
+        return jsonify({
+            'success': False,
+            'message': 'Missing required fields'
+        }), 400
+    
+    doctor = Doctor.query.get(current_user_id)
+    if not doctor:
+        return jsonify({
+            'success': False,
+            'message': 'Doctor not found'
+        }), 404
+    
+    if not doctor.check_password(data['current_password']):
+        return jsonify({
+            'success': False,
+            'message': 'Current password is incorrect'
+        }), 400
+    
+    # 验证新密码强度
+    is_valid, error_msg = validate_password(data['new_password'])
+    if not is_valid:
+        return jsonify({
+            'success': False,
+            'message': error_msg
+        }), 400
+    
+    try:
+        doctor.set_password(data['new_password'])
+        db.session.commit()
+        return jsonify({
+            'success': True,
+            'message': 'Password changed successfully'
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500

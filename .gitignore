@@ -2,3 +2,5 @@
 __pycache__/
 .vscode/
 migrations/
+构件级设计.md
+用例.md

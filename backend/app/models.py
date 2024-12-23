@@ -1,88 +1,99 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from app import db
 from werkzeug.security import generate_password_hash, check_password_hash
+import random
 
 class Doctor(db.Model):
     __tablename__ = 'doctors'
-    doctor_id = db.Column(db.Integer, primary_key=True)
-    doctor_name = db.Column(db.String(50), nullable=False)
-    job_number = db.Column(db.String(10), nullable=False, unique=True)
-    password = db.Column(db.String(70), nullable=False)
     
-    predictions = db.relationship('PredRecord', secondary='pred_doctor', back_populates='doctor')
+    doctor_id = db.Column(db.String(64), primary_key=True)
+    name = db.Column(db.String(64), nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    department = db.Column(db.String(64), nullable=False)
+    password_hash = db.Column(db.String(256))
+    login_attempts = db.Column(db.Integer, default=0)  # 登录尝试次数
+    locked_until = db.Column(db.DateTime)  # 账户锁定截止时间
     
     def set_password(self, password):
-        self.password = generate_password_hash(password, method='sha256')
+        """设置密码"""
+        self.password_hash = generate_password_hash(password)
     
     def check_password(self, password):
-        return check_password_hash(self.password, password)
+        """验证密码"""
+        return check_password_hash(self.password_hash, password)
+    
+    def is_locked(self):
+        """检查账户是否被锁定"""
+        if self.locked_until is None:
+            return False
+        return datetime.utcnow() < self.locked_until
+    
+    def increment_login_attempts(self):
+        """增加登录尝试次数，如果超过限制则锁定账户"""
+        self.login_attempts += 1
+        if self.login_attempts >= 5:  # 5次失败后锁定账户
+            self.locked_until = datetime.utcnow() + timedelta(minutes=30)  # 锁定30分钟
+    
+    def reset_login_attempts(self):
+        """重置登录尝试次数"""
+        self.login_attempts = 0
+        self.locked_until = None
 
 class Administrator(db.Model):
     __tablename__ = 'administrators'
+    
     admin_id = db.Column(db.Integer, primary_key=True)
-    password = db.Column(db.String(70), nullable=False)
+    password_hash = db.Column(db.String(128), nullable=False)
     
     def set_password(self, password):
-        self.password = generate_password_hash(password, method='sha256')
+        """设置密码"""
+        self.password_hash = generate_password_hash(password)
     
     def check_password(self, password):
-        return check_password_hash(self.password, password)
+        """验证密码"""
+        return check_password_hash(self.password_hash, password)
 
 class MRISequence(db.Model):
     __tablename__ = 'mri_sequences'
-    seq_id = db.Column(db.Integer, primary_key=True)
-    seq_dir = db.Column(db.String(500), nullable=False)
     
-    # 关联
-    items = db.relationship('MRISeqItem', secondary='sequence_item', back_populates='sequences')
-    patient = db.relationship('Patient', secondary='patient_sequence', back_populates='sequences')
+    seq_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    seq_dir = db.Column(db.String(255), nullable=False)
 
 class MRISeqItem(db.Model):
     __tablename__ = 'mri_seq_items'
-    item_id = db.Column(db.Integer, primary_key=True)
-    item_name = db.Column(db.String(256), nullable=False)
     
-    # 关联
-    sequences = db.relationship('MRISequence', secondary='sequence_item', back_populates='items')
-    predictions = db.relationship('PredRecord', secondary='pred_mri_item', back_populates='mri_item')
-
-class SequenceItem(db.Model):
-    __tablename__ = 'sequence_item'
-    item_id = db.Column(db.Integer, db.ForeignKey('mri_seq_items.item_id'), primary_key=True)
+    item_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    item_name = db.Column(db.String(255), nullable=False)
     seq_id = db.Column(db.Integer, db.ForeignKey('mri_sequences.seq_id'), nullable=False)
 
 class Patient(db.Model):
     __tablename__ = 'patients'
-    patient_id = db.Column(db.Integer, primary_key=True)
-    patient_name = db.Column(db.String(50), nullable=False)
-    sex = db.Column(db.String(15), nullable=False)
-    age = db.Column(db.Integer, nullable=False)
-    IDNumber = db.Column(db.String(20), nullable=False, unique=True)
     
-    # 关联
-    sequences = db.relationship('MRISequence', secondary='patient_sequence', back_populates='patient')
-
-class PatientSequence(db.Model):
-    __tablename__ = 'patient_sequence'
-    seq_id = db.Column(db.Integer, db.ForeignKey('mri_sequences.seq_id'), primary_key=True)
-    patient_id = db.Column(db.Integer, db.ForeignKey('patients.patient_id'), nullable=False)
+    patient_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    patient_name = db.Column(db.String(50), nullable=False)
+    sex = db.Column(db.String(10), nullable=False)
+    age = db.Column(db.Integer, nullable=False)
+    id_number = db.Column(db.String(18), unique=True, nullable=False)
 
 class PredRecord(db.Model):
     __tablename__ = 'pred_records'
-    pred_id = db.Column(db.Integer, primary_key=True)
-    pred_time = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-    result_name = db.Column(db.String(800), nullable=False)
     
-    # 关联
-    doctor = db.relationship('Doctor', secondary='pred_doctor', back_populates='predictions')
-    mri_item = db.relationship('MRISeqItem', secondary='pred_mri_item', back_populates='predictions')
+    pred_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    pred_time = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    result_name = db.Column(db.String(255), nullable=False)
 
-class PredDoctor(db.Model):
-    __tablename__ = 'pred_doctor'
-    pred_id = db.Column(db.Integer, db.ForeignKey('pred_records.pred_id'), primary_key=True)
-    doctor_id = db.Column(db.Integer, db.ForeignKey('doctors.doctor_id'), nullable=False)
+# 关联表
+pred_doctor = db.Table('pred_doctor',
+    db.Column('pred_id', db.Integer, db.ForeignKey('pred_records.pred_id'), primary_key=True),
+    db.Column('doctor_id', db.String(64), db.ForeignKey('doctors.doctor_id'), primary_key=True)
+)
 
-class PredMRIItem(db.Model):
-    __tablename__ = 'pred_mri_item'
-    pred_id = db.Column(db.Integer, db.ForeignKey('pred_records.pred_id'), primary_key=True)
-    item_id = db.Column(db.Integer, db.ForeignKey('mri_seq_items.item_id'), nullable=False)
+pred_mri_item = db.Table('pred_mri_item',
+    db.Column('pred_id', db.Integer, db.ForeignKey('pred_records.pred_id'), primary_key=True),
+    db.Column('item_id', db.Integer, db.ForeignKey('mri_seq_items.item_id'), primary_key=True)
+)
+
+sequence_item = db.Table('sequence_item',
+    db.Column('seq_id', db.Integer, db.ForeignKey('mri_sequences.seq_id'), primary_key=True),
+    db.Column('item_id', db.Integer, db.ForeignKey('mri_seq_items.item_id'), primary_key=True)
+)

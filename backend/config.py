@@ -33,3 +33,11 @@ class Config:
     # 邮件验证码配置
     VERIFICATION_CODE_EXPIRE = 900  # 15分钟过期
     VERIFICATION_CODE_RESEND_INTERVAL = 60  # 1分钟后可重新发送
+    
+    # 邮件服务器配置
+    MAIL_SERVER = os.environ.get('MAIL_SERVER', 'smtp.qq.com')
+    MAIL_PORT = int(os.environ.get('MAIL_PORT', '587'))
+    MAIL_USE_TLS = os.environ.get('MAIL_USE_TLS', 'true').lower() in ['true', 'on', '1']
+    MAIL_USERNAME = os.environ.get('MAIL_USERNAME')
+    MAIL_PASSWORD = os.environ.get('MAIL_PASSWORD')  # 对于QQ邮箱，这里需要使用授权码
+    MAIL_DEFAULT_SENDER = os.environ.get('MAIL_DEFAULT_SENDER')

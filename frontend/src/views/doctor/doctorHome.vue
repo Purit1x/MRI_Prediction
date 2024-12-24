@@ -148,10 +148,12 @@ const handleCommand = (command) => {
     box-shadow: 0 1px 4px rgba(0,21,41,.08);
     padding: 0 20px;
     height: 60px;
+    min-width: 1000px;
 }
 
 .header-left {
     width: 300px;
+    flex-shrink: 0;
 }
 
 .system-title {
@@ -164,14 +166,31 @@ const handleCommand = (command) => {
     flex: 1;
     display: flex;
     justify-content: center;
+    min-width: 400px;
+    margin: 0 20px;
 }
 
 .nav-menu {
     border-bottom: none;
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+    width: 100%;
+    max-width: 500px;
+}
+
+.nav-menu .el-menu-item {
+    flex: 0 0 auto;
+    height: 60px;
+    line-height: 60px;
+    padding: 0 20px;
+    font-size: 16px;
+    white-space: nowrap;
 }
 
 .header-right {
     width: 200px;
+    flex-shrink: 0;
     display: flex;
     justify-content: flex-end;
 }

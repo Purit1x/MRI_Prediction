@@ -27,7 +27,7 @@ class Config:
     JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=30)
     
     # 文件上传配置
-    UPLOAD_FOLDER = os.path.join(basedir, 'uploads')
+    UPLOAD_FOLDER = os.path.join(os.path.dirname(basedir), 'uploads')
     MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB max-limit
     
     # 邮件验证码配置
